@@ -1,0 +1,29 @@
+# Caddy site for the shop, as used on the sukoon.uz server: the React build as
+# static files and the Go API under /api/, on one domain. Caddy obtains and
+# renews the HTTPS certificate by itself once DNS points at the server.
+#
+# Append this block to /etc/caddy/Caddyfile (replace the domain and path if
+# needed), then: caddy validate --config /etc/caddy/Caddyfile && sudo systemctl reload caddy
+# In backend/.env keep HOST=127.0.0.1 and set TRUST_PROXY=true.
+
+shop.sukoon.uz {
+	encode gzip zstd
+	header X-Content-Type-Options nosniff
+
+	handle /api/* {
+		reverse_proxy 127.0.0.1:5000 {
+			# The API's per-IP login rate limit reads this (TRUST_PROXY=true in backend/.env).
+			header_up X-Real-IP {remote_host}
+		}
+	}
+
+	handle {
+		root * /opt/online-shopping/frontend/dist
+		@assets path /assets/*
+		header @assets Cache-Control "public, max-age=31536000, immutable"
+		@pages not path /assets/*
+		header @pages Cache-Control "no-cache"
+		try_files {path} /index.html
+		file_server
+	}
+}
