@@ -11,7 +11,7 @@ internal/db/migrations/  SQL schema migrations (goose), embedded in the binary
 internal/api/            HTTP handlers: auth, products, cart, orders
 internal/seed/           admin user + sample products
 internal/testdb/         per-test throwaway databases
-deploy/                  systemd unit template, database setup script, nginx example
+deploy/                  systemd unit template, database setup script
 scripts/                 test helper that runs a throwaway PostgreSQL
 ```
 
@@ -26,6 +26,10 @@ make dev         # http://127.0.0.1:5000
 ```
 
 Other database targets: `make psql` (shell on the app database), `make db-reset` (drop, recreate, re-seed).
+
+For development without touching the system PostgreSQL, `make local-db` instead starts a private server as
+your user (no sudo) on port 55433, creates the database and sets `DB_PORT` in `.env`; stop it with
+`make local-db-stop`. Data is kept in `~/.local/share/online-shopping/postgres` between runs.
 
 ### Configuration
 
@@ -63,23 +67,22 @@ make test-race   # same, with the race detector
 
 `make test` starts a temporary PostgreSQL server in a temp directory (it needs the PostgreSQL server binaries,
 not a running server or sudo; run it as a normal user, since `initdb` refuses to run as root) and gives
-every test its own fresh, migrated database. To run against an existing server instead, set `TEST_DATABASE_URL` to a superuser connection and
-run `go test ./...`; without it, database tests are skipped.
+every test its own fresh, migrated database. To run against an existing server instead, set
+`TEST_DATABASE_URL` to a superuser connection and run `go test ./...`; without it, database tests are skipped.
 
 ## Deploying to a server
 
-On a Linux server with Go, PostgreSQL and nginx installed:
+See the [top-level README](../README.md#deploying-to-a-server) for the full setup with the frontend and nginx.
+For the API alone:
 
 ```bash
-git clone <repo> /opt/online-shopping && cd /opt/online-shopping/backend
 make db-create          # creates .env with random secrets, then the database (sudo)
-# edit .env: CORS_ORIGINS=https://your-frontend.example, TRUST_PROXY=true
+# edit .env: TRUST_PROXY=true (behind nginx)
 make seed               # creates the admin (password is ADMIN_PASSWORD in .env)
 make service-install    # builds and starts the systemd service on 127.0.0.1:5000
 ```
 
-Then put nginx with HTTPS in front using [`deploy/nginx.conf`](deploy/nginx.conf). To update later:
-`git pull && make service-restart`.
+`CORS_ORIGINS` is only needed if the frontend is served from a different domain than the API.
 
 ## Running as a systemd service
 

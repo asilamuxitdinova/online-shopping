@@ -17,7 +17,7 @@ func TestCheckout(t *testing.T) {
 		map[string]any{"shippingAddress": strings.Repeat("a", maxAddressLen+1)})
 
 	order := e.checkout(user)
-	if order.Status != "pending" || order.Total != 269.97 || len(order.Items) != 1 || order.Items[0].Quantity != 3 {
+	if order.Status != "pending" || order.Total != 3_450_000 || len(order.Items) != 1 || order.Items[0].Quantity != 3 {
 		t.Fatalf("unexpected order %+v", order)
 	}
 	if stock := e.product(1).Stock; stock != 22 {

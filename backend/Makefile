@@ -20,7 +20,7 @@ UNIT_BUILD    := build/$(SERVICE).service
 UNIT_TARGET   := /etc/systemd/system/$(SERVICE).service
 
 .DEFAULT_GOAL := help
-.PHONY: help deps build env seed dev start vet test test-race db-create db-drop db-reset psql \
+.PHONY: help deps build env seed dev start vet test test-race db-create db-drop db-reset psql local-db local-db-stop \
         service-unit service-install service-uninstall service-start service-stop \
         service-restart service-status service-logs clean
 
@@ -84,6 +84,38 @@ db-reset: ## Drop, recreate and re-seed the database (sudo)
 
 psql: .env ## Open a psql shell on the app database
 	PGPASSWORD="$(DB_PASSWORD)" psql -h "$(DB_HOST)" -p "$(DB_PORT)" -U "$(DB_USER)" "$(DB_NAME)"
+
+# ------------------------------------------------------- local development DB
+# A private PostgreSQL server owned by your user, for running the app on your
+# own machine without touching the system PostgreSQL (no sudo). Its data lives
+# in your home directory because PostgreSQL refuses data directories on
+# filesystems without Unix permissions (e.g. NTFS).
+
+PG_BIN       ?= $(shell ls -d /usr/lib/postgresql/*/bin 2>/dev/null | sort -V | tail -n 1)
+LOCAL_DB_DIR ?= $(HOME)/.local/share/online-shopping/postgres
+LOCAL_DB_PORT ?= 55433
+
+local-db: .env ## Start a private dev PostgreSQL on port 55433 and point .env at it (no sudo)
+	@test -x "$(PG_BIN)/initdb" || { echo "PostgreSQL server binaries not found; set PG_BIN=/path/to/bin"; exit 1; }
+	@if [ ! -f "$(LOCAL_DB_DIR)/PG_VERSION" ]; then \
+		mkdir -p "$(LOCAL_DB_DIR)" && \
+		"$(PG_BIN)/initdb" -D "$(LOCAL_DB_DIR)" -U postgres --auth=trust >/dev/null && \
+		echo "Created local database cluster in $(LOCAL_DB_DIR)"; \
+	fi
+	@if "$(PG_BIN)/pg_ctl" -D "$(LOCAL_DB_DIR)" status >/dev/null 2>&1; then \
+		echo "Local PostgreSQL already running on port $(LOCAL_DB_PORT)"; \
+	else \
+		"$(PG_BIN)/pg_ctl" -D "$(LOCAL_DB_DIR)" -l "$(LOCAL_DB_DIR)/postgres.log" -w \
+			-o "-p $(LOCAL_DB_PORT) -k '' -c listen_addresses=localhost" start >/dev/null && \
+		echo "Started local PostgreSQL on port $(LOCAL_DB_PORT)"; \
+	fi
+	@psql -h localhost -p "$(LOCAL_DB_PORT)" -U postgres -q -v db_user="$(DB_USER)" \
+		-v db_password="$(DB_PASSWORD)" -v db_name="$(DB_NAME)" < deploy/create-db.sql
+	@sed -i -e 's/^DB_HOST=.*/DB_HOST=localhost/' -e 's/^DB_PORT=.*/DB_PORT=$(LOCAL_DB_PORT)/' .env
+	@echo "Database \"$(DB_NAME)\" is ready; .env now uses localhost:$(LOCAL_DB_PORT)"
+
+local-db-stop: ## Stop the private dev PostgreSQL (data is kept)
+	"$(PG_BIN)/pg_ctl" -D "$(LOCAL_DB_DIR)" -m fast stop
 
 # -------------------------------------------------------------------- systemd
 

@@ -1,4 +1,5 @@
-// Package seed creates the admin account (from .env) and some sample products.
+// Package seed creates the admin account (from .env) and some sample products
+// (prices in Uzbek so'm).
 package seed
 
 import (
@@ -21,12 +22,12 @@ var sampleProducts = []struct {
 	stock             int
 	category          string
 }{
-	{"Wireless Headphones", "Noise-cancelling over-ear headphones", 89.99, 25, "electronics"},
-	{"Smartphone Stand", "Adjustable aluminium phone stand", 14.5, 100, "electronics"},
-	{"Cotton T-Shirt", "100% cotton, unisex fit", 12.0, 200, "clothing"},
-	{"Denim Jacket", "Classic blue denim jacket", 59.0, 40, "clothing"},
-	{"Ceramic Mug", "350 ml, dishwasher safe", 8.75, 150, "home"},
-	{"Desk Lamp", "LED lamp with three brightness levels", 27.3, 60, "home"},
+	{"Wireless Headphones", "Noise-cancelling over-ear headphones", 1_150_000, 25, "electronics"},
+	{"Smartphone Stand", "Adjustable aluminium phone stand", 185_000, 100, "electronics"},
+	{"Cotton T-Shirt", "100% cotton, unisex fit", 149_000, 200, "clothing"},
+	{"Denim Jacket", "Classic blue denim jacket", 690_000, 40, "clothing"},
+	{"Ceramic Mug", "350 ml, dishwasher safe", 95_000, 150, "home"},
+	{"Desk Lamp", "LED lamp with three brightness levels", 320_000, 60, "home"},
 }
 
 // Passwords that ship in example files and must never protect a real admin account.

@@ -27,7 +27,7 @@ func TestListProducts(t *testing.T) {
 		{"?search=HEADPHONES", 1, "Wireless Headphones"},
 		{"?search=%25", 1, "Cotton T-Shirt"}, // "%" matches literally ("100% cotton"), not everything
 		{"?search=_", 0, ""},
-		{"?minPrice=10&maxPrice=30", 3, ""},
+		{"?minPrice=100000&maxPrice=400000", 3, ""},
 		{"?sort=price_asc", 6, "Ceramic Mug"},
 		{"?sort=price_desc", 6, "Wireless Headphones"},
 		{"?sort=name", 6, "Ceramic Mug"},
@@ -57,7 +57,7 @@ func TestListProducts(t *testing.T) {
 		t.Fatalf("got %d categories, want 3", len(cats.Categories))
 	}
 
-	if p := e.product(1); p.Name != "Wireless Headphones" || p.Price != 89.99 {
+	if p := e.product(1); p.Name != "Wireless Headphones" || p.Price != 1_150_000 {
 		t.Fatalf("unexpected product %+v", p)
 	}
 	e.expect(http.StatusNotFound, "GET", "/api/products/999", "", nil)

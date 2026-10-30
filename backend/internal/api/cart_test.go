@@ -16,7 +16,7 @@ func TestCart(t *testing.T) {
 	e.expect(http.StatusUnauthorized, "GET", "/api/cart", "", nil)
 
 	cart := e.addToCart(user, 1, 2)
-	if cart.Count != 2 || cart.Total != 179.98 || cart.Items[0].Subtotal != 179.98 {
+	if cart.Count != 2 || cart.Total != 2_300_000 || cart.Items[0].Subtotal != 2_300_000 {
 		t.Fatalf("unexpected cart %+v", cart)
 	}
 	var added Cart
