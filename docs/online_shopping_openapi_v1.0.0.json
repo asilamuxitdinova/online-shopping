@@ -1,0 +1,1685 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Bozor Online Shop API",
+    "version": "1.0.0",
+    "description": "An online shop for Uzbekistan. Shoppers browse a product catalog, keep a cart, place orders with a delivery address and can cancel an order while it is still pending. Admins manage the catalog and move orders through their statuses. Prices are in Uzbek so'm.\n\nThe shopping flow. 1) `register` (or `login`) returns an access token and a refresh token. 2) `list_products` (with `search`, `category`, price and sort filters) and `get_product` show the catalog; `list_categories` lists the categories with counts. 3) `add_to_cart` puts products in the caller's cart; `set_cart_quantity`, `remove_from_cart` and `clear_cart` change it, and every cart call answers with the whole cart. 4) `checkout` turns the cart into an order with the given delivery address, takes the items out of stock and empties the cart. 5) `list_orders` and `get_order` show the caller's orders; `cancel_order` cancels one while it is `pending` and puts the stock back.\n\nRoles. There are two: `customer` (everyone who registers) and `admin` (created on the server by `make seed`). Operations tagged `admin` need an admin token; a customer gets 403. An admin can also read every order with `get_order` and `list_orders` (`all=true`).\n\nAuthentication. Two tokens. The access token is a JWT sent as `Authorization: Bearer <access_token>`; it lasts 15 minutes (`expires_in` says how many seconds). The refresh token lasts 30 days and is used only with `refresh_token` to get a new pair. Refresh tokens are single-use: `refresh_token` revokes the one it was given. Presenting a refresh token that was already used revokes every session of that user, because it means the token was copied, so a client must never send the same refresh token twice (for example from two tabs at once). `logout` ends one session and `logout_all` ends all of them; an access token that was already issued stays valid until it expires. Only `health`, `register`, `login`, `refresh_token`, `logout` and the catalog reads (`list_products`, `list_categories`, `get_product`) work without an access token.\n\nResponses. There is no envelope. A successful response is the resource itself or the resource under a named key, as each operation shows: a product as `{\"product\": ...}`, an order as `{\"order\": ...}`, a list of orders as `{\"orders\": [...]}`, while the cart and a product page come back bare. Every error is `{\"error\": \"...\"}` with a human-readable English message; the messages listed in the descriptions are the exact texts the server sends.\n\nMoney. Prices and totals are JSON numbers in so'm with at most two decimals (the catalog uses whole so'm). A line's `subtotal` is `price × quantity` and a cart or order `total` is the sum of its lines, all rounded to two decimals.\n\nLimits. A request body is at most 1 MiB; a larger or malformed body gets 400 `Invalid JSON body`. `register`, `login` and `refresh_token` together allow 10 attempts per minute per client IP; more get 429 with a `Retry-After` header. A cart holds at most 1000 of one product and never more than is in stock. Text limits: names 200 characters, descriptions 5000, delivery addresses 500, image links 2048. Prices go from 0 to 1 000 000 000 so'm and stock from 0 to 1 000 000 000.\n\nNot included. Any other path under `/api/` answers 404 `Route <METHOD> <path> not found`."
+  },
+  "servers": [
+    {
+      "url": "https://shop.sukoon.uz",
+      "description": "Production"
+    }
+  ],
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "tags": [
+    {
+      "name": "auth",
+      "description": "Create an account, sign in and out, refresh tokens, read the current user."
+    },
+    {
+      "name": "products",
+      "description": "The public product catalog and its categories."
+    },
+    {
+      "name": "cart",
+      "description": "The signed-in user's shopping cart."
+    },
+    {
+      "name": "orders",
+      "description": "Checkout, order history and cancelling a pending order."
+    },
+    {
+      "name": "admin",
+      "description": "Admin only: manage products and order statuses."
+    },
+    {
+      "name": "system",
+      "description": "Health check."
+    }
+  ],
+  "paths": {
+    "/api/health": {
+      "get": {
+        "operationId": "health",
+        "tags": [
+          "system"
+        ],
+        "summary": "Health check",
+        "description": "Answers `{\"status\": \"ok\"}` when the service is running and its database answers within 2 seconds, and 503 `{\"status\": \"unavailable\"}` otherwise. Public; needs no token. Use it for uptime monitoring.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "The service and its database are up",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "ok"
+                      ],
+                      "example": "ok"
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The database is unreachable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "unavailable"
+                      ],
+                      "example": "unavailable"
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/register": {
+      "post": {
+        "operationId": "register",
+        "tags": [
+          "auth"
+        ],
+        "summary": "Create an account",
+        "description": "Creates a `customer` account and signs it in, returning the same token pair as `login`. The email is trimmed and stored in lower case, and must not be registered yet (409 `Email is already registered`, whatever its letter case). Validation messages: `Name is required`, `Name must be at most 200 characters`, `A valid email is required`, `Password must be at least 8 characters`, `Password must be at most 72 bytes`. Shares the per-IP limit with `login` and `refresh_token`.",
+        "security": [],
+        "x-frege-auth-op": true,
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200,
+                    "description": "Trimmed; must not be blank.",
+                    "example": "Dilnoza Karimova"
+                  },
+                  "email": {
+                    "type": "string",
+                    "format": "email",
+                    "maxLength": 254,
+                    "example": "dilnoza@example.uz"
+                  },
+                  "password": {
+                    "type": "string",
+                    "format": "password",
+                    "minLength": 8,
+                    "description": "8 characters to 72 bytes.",
+                    "example": "kuchli-parol-2026"
+                  }
+                },
+                "required": [
+                  "name",
+                  "email",
+                  "password"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Account created and signed in",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenPair"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/auth/login": {
+      "post": {
+        "operationId": "login",
+        "tags": [
+          "auth"
+        ],
+        "summary": "Sign in",
+        "description": "Signs in with email and password and returns an access token for every other call plus a refresh token for `refresh_token`. The email is matched case-insensitively. A wrong email and a wrong password both get 401 `Invalid email or password`; a missing field gets 400 `Email and password are required`. Shares the per-IP limit with `register` and `refresh_token`.",
+        "security": [],
+        "x-frege-auth-op": true,
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "email": {
+                    "type": "string",
+                    "format": "email",
+                    "example": "dilnoza@example.uz"
+                  },
+                  "password": {
+                    "type": "string",
+                    "format": "password",
+                    "example": "kuchli-parol-2026"
+                  }
+                },
+                "required": [
+                  "email",
+                  "password"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Signed in",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenPair"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/auth/refresh": {
+      "post": {
+        "operationId": "refresh_token",
+        "tags": [
+          "auth"
+        ],
+        "summary": "Get a new token pair",
+        "description": "Exchanges a refresh token for a new access token and a new refresh token, and revokes the refresh token that was sent. Call it when an access token gets 401, or shortly before `expires_in` runs out, then keep only the new refresh token.\n\nFailures are all 401: `Invalid refresh token` (unknown, or ended by `logout`), `Refresh token has expired`, or `Refresh token was already used; all sessions have been signed out` — a refresh token that was already exchanged was presented again, so every session of that user is revoked and they must sign in again. A missing token gets 400 `Refresh token is required`. Shares the per-IP limit with `login` and `register`.",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RefreshRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A new token pair",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenPair"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/auth/logout": {
+      "post": {
+        "operationId": "logout",
+        "tags": [
+          "auth"
+        ],
+        "summary": "End this session",
+        "description": "Deletes the given refresh token so it can no longer be exchanged. Answers 204 even if the token was unknown or already used, so it is safe to call more than once. Needs no access token. The access token issued with it stays valid until it expires (at most 15 minutes), so a client should also discard it.",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RefreshRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Done. No body."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          }
+        }
+      }
+    },
+    "/api/auth/logout-all": {
+      "post": {
+        "operationId": "logout_all",
+        "tags": [
+          "auth"
+        ],
+        "summary": "End every session",
+        "description": "Deletes every refresh token of the current user, signing them out on all devices once their access tokens expire. No request body.",
+        "responses": {
+          "204": {
+            "description": "Done. No body."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/api/auth/me": {
+      "get": {
+        "operationId": "get_me",
+        "tags": [
+          "auth"
+        ],
+        "summary": "Get the current user",
+        "description": "Returns the user the access token belongs to, read fresh from the database (so a changed role shows here at once).",
+        "responses": {
+          "200": {
+            "description": "The current user",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "user": {
+                      "$ref": "#/components/schemas/User"
+                    }
+                  },
+                  "required": [
+                    "user"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/api/products": {
+      "get": {
+        "operationId": "list_products",
+        "tags": [
+          "products"
+        ],
+        "summary": "List products",
+        "description": "Returns one page of the catalog. All filters are optional and combine with AND. A filter value that is not a number is treated as 0 for prices and as the default for `page` and `limit`, rather than rejected. Public; needs no token.",
+        "security": [],
+        "parameters": [
+          {
+            "name": "search",
+            "in": "query",
+            "required": false,
+            "description": "Matches anywhere in the name or description, ignoring letter case. `%` and `_` match literally.",
+            "schema": {
+              "type": "string",
+              "example": "lamp"
+            }
+          },
+          {
+            "name": "category",
+            "in": "query",
+            "required": false,
+            "description": "Exact category, case-insensitive, as returned by `list_categories`.",
+            "schema": {
+              "type": "string",
+              "example": "home"
+            }
+          },
+          {
+            "name": "minPrice",
+            "in": "query",
+            "required": false,
+            "description": "Lowest price in so'm, inclusive.",
+            "schema": {
+              "type": "number",
+              "minimum": 0,
+              "example": 100000
+            }
+          },
+          {
+            "name": "maxPrice",
+            "in": "query",
+            "required": false,
+            "description": "Highest price in so'm, inclusive.",
+            "schema": {
+              "type": "number",
+              "minimum": 0,
+              "example": 500000
+            }
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "required": false,
+            "description": "`newest` (default), `price_asc`, `price_desc` or `name` (A–Z, ignoring case). Unknown values fall back to `newest`.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "newest",
+                "price_asc",
+                "price_desc",
+                "name"
+              ],
+              "default": "newest"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "description": "Page number, from 1.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Products per page, 1 to 100; values outside are clamped.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of products",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductPage"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "create_product",
+        "tags": [
+          "admin"
+        ],
+        "summary": "Create a product",
+        "description": "**Admin role required** — a customer token gets 403. Adds a product. `name` and `price` are required; `stock` defaults to 0, `category` to `general` and `description` to empty. See `ProductInput` for how each field is cleaned and checked. Validation messages: `Name is required`, `Name must be at most 200 characters`, `Description must be at most 5000 characters`, `Price must be a number from 0 to 1000000000`, `Stock must be a whole number from 0 to 1000000000`, `Category must be at most 200 characters`, `Image URL must be an http or https link`.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/ProductInput"
+                  },
+                  {
+                    "required": [
+                      "name",
+                      "price"
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The new product",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "product": {
+                      "$ref": "#/components/schemas/Product"
+                    }
+                  },
+                  "required": [
+                    "product"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/products/categories": {
+      "get": {
+        "operationId": "list_categories",
+        "tags": [
+          "products"
+        ],
+        "summary": "List categories",
+        "description": "Returns every category that has at least one product, with how many products it has, sorted by name. Public; needs no token.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "The categories",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "categories": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/CategoryCount"
+                      }
+                    }
+                  },
+                  "required": [
+                    "categories"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/products/{id}": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "description": "The product id. A value that is not a positive whole number matches nothing, so it gets 404.",
+          "schema": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1,
+            "example": 1
+          }
+        }
+      ],
+      "get": {
+        "operationId": "get_product",
+        "tags": [
+          "products"
+        ],
+        "summary": "Get a product",
+        "description": "Returns one product. 404 `Product not found` if it does not exist. Public; needs no token.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "The product",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "product": {
+                      "$ref": "#/components/schemas/Product"
+                    }
+                  },
+                  "required": [
+                    "product"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      },
+      "patch": {
+        "operationId": "update_product",
+        "tags": [
+          "admin"
+        ],
+        "summary": "Update a product",
+        "description": "**Admin role required** — a customer token gets 403. Changes only the fields that are sent, with the same checks as `create_product`, and sets `updated_at`. Send `\"image_url\": \"\"` to remove the image (`null` counts as not sent). An empty body gets 400 `No fields to update`.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProductInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The updated product",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "product": {
+                      "$ref": "#/components/schemas/Product"
+                    }
+                  },
+                  "required": [
+                    "product"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "delete_product",
+        "tags": [
+          "admin"
+        ],
+        "summary": "Delete a product",
+        "description": "**Admin role required** — a customer token gets 403. Deletes the product and removes it from every cart. Orders that contain it keep their copy of its name and price, with `product_id` set to null.",
+        "responses": {
+          "204": {
+            "description": "Done. No body."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/api/cart": {
+      "get": {
+        "operationId": "get_cart",
+        "tags": [
+          "cart"
+        ],
+        "summary": "Get the cart",
+        "description": "Returns the caller's cart with current prices and stock, sorted by product name. An empty cart has `items: []` and totals of 0.",
+        "responses": {
+          "200": {
+            "description": "The cart",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Cart"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "clear_cart",
+        "tags": [
+          "cart"
+        ],
+        "summary": "Empty the cart",
+        "description": "Removes every item and returns the now empty cart.",
+        "responses": {
+          "200": {
+            "description": "The empty cart",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Cart"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/api/cart/items": {
+      "post": {
+        "operationId": "add_to_cart",
+        "tags": [
+          "cart"
+        ],
+        "summary": "Add a product to the cart",
+        "description": "Adds `quantity` (default 1) of a product to the cart, on top of any already there, and returns the whole cart. The resulting quantity must not exceed the product's stock (400 `Only <n> item(s) in stock`) or 1000 (400 `At most 1000 of one product can be ordered`); a rejected change leaves the cart as it was. A `quantity` outside 1–1000 gets 400 `Quantity must be a whole number from 1 to 1000`; an unknown or missing `productId` gets 404 `Product not found`.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "productId": {
+                    "type": "integer",
+                    "format": "int64",
+                    "minimum": 1,
+                    "example": 6
+                  },
+                  "quantity": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1000,
+                    "default": 1,
+                    "example": 2
+                  }
+                },
+                "required": [
+                  "productId"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The updated cart",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Cart"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/api/cart/items/{productId}": {
+      "parameters": [
+        {
+          "name": "productId",
+          "in": "path",
+          "required": true,
+          "description": "The id of a product in the cart.",
+          "schema": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1,
+            "example": 1
+          }
+        }
+      ],
+      "patch": {
+        "operationId": "set_cart_quantity",
+        "tags": [
+          "cart"
+        ],
+        "summary": "Set an item's quantity",
+        "description": "Sets the quantity of a product that is already in the cart (404 `Item is not in the cart` otherwise) and returns the whole cart. The resulting quantity must not exceed the product's stock (400 `Only <n> item(s) in stock`) or 1000 (400 `At most 1000 of one product can be ordered`); a rejected change leaves the cart as it was. `quantity` is required; outside 1–1000 it gets 400 `Quantity must be a whole number from 1 to 1000`. To take an item out, use `remove_from_cart`.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "quantity": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1000,
+                    "example": 3
+                  }
+                },
+                "required": [
+                  "quantity"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The updated cart",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Cart"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "remove_from_cart",
+        "tags": [
+          "cart"
+        ],
+        "summary": "Remove an item from the cart",
+        "description": "Takes the product out of the cart and returns the whole cart. 404 `Item is not in the cart` if it was not there.",
+        "responses": {
+          "200": {
+            "description": "The updated cart",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Cart"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/api/orders": {
+      "post": {
+        "operationId": "checkout",
+        "tags": [
+          "orders"
+        ],
+        "summary": "Place an order",
+        "description": "Turns the whole cart into a `pending` order delivered to `shippingAddress`, takes the quantities out of stock and empties the cart, all in one step: either everything happens or nothing does. Names and prices are copied into the order, so later product changes do not alter it.\n\nErrors: 400 `Cart is empty`, 400 `Shipping address is required`, 400 `Shipping address must be at most 500 characters`, and 409 `Not enough stock for \"<name>\"` when another shopper bought the item first (the cart is left as it was). Two checkouts sent at the same moment create one order; the other gets `Cart is empty`.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "shippingAddress": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "description": "Trimmed; must not be blank.",
+                    "example": "Toshkent sh., Amir Temur koʻchasi 1, 5-xonadon"
+                  }
+                },
+                "required": [
+                  "shippingAddress"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The new order",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "order": {
+                      "$ref": "#/components/schemas/Order"
+                    }
+                  },
+                  "required": [
+                    "order"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          }
+        }
+      },
+      "get": {
+        "operationId": "list_orders",
+        "tags": [
+          "orders"
+        ],
+        "summary": "List orders",
+        "description": "Returns the caller's orders with their items, newest first. An admin can pass `all=true` to get every customer's orders; for a customer `all` is ignored.",
+        "parameters": [
+          {
+            "name": "all",
+            "in": "query",
+            "required": false,
+            "description": "Admin only: `true` returns the orders of all users.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The orders",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "orders": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Order"
+                      }
+                    }
+                  },
+                  "required": [
+                    "orders"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/api/orders/{id}": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "description": "The order id. A value that is not a positive whole number matches nothing, so it gets 404.",
+          "schema": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1,
+            "example": 1
+          }
+        }
+      ],
+      "get": {
+        "operationId": "get_order",
+        "tags": [
+          "orders"
+        ],
+        "summary": "Get an order",
+        "description": "Returns one order with its items. Customers can only read their own; someone else's order gets 404 `Order not found`, the same as one that does not exist. Admins can read any order.",
+        "responses": {
+          "200": {
+            "description": "The order",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "order": {
+                      "$ref": "#/components/schemas/Order"
+                    }
+                  },
+                  "required": [
+                    "order"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/api/orders/{id}/cancel": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "description": "The order id. A value that is not a positive whole number matches nothing, so it gets 404.",
+          "schema": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1,
+            "example": 1
+          }
+        }
+      ],
+      "post": {
+        "operationId": "cancel_order",
+        "tags": [
+          "orders"
+        ],
+        "summary": "Cancel a pending order",
+        "description": "Cancels the caller's order and puts its items back in stock (items whose product was deleted are skipped). Only a `pending` order can be cancelled; any other status gets 400 `Cannot cancel an order that is <status>`, so cancelling twice is safe. No request body.",
+        "responses": {
+          "200": {
+            "description": "The cancelled order",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "order": {
+                      "$ref": "#/components/schemas/Order"
+                    }
+                  },
+                  "required": [
+                    "order"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/api/orders/{id}/status": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "description": "The order id. A value that is not a positive whole number matches nothing, so it gets 404.",
+          "schema": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1,
+            "example": 1
+          }
+        }
+      ],
+      "patch": {
+        "operationId": "set_order_status",
+        "tags": [
+          "admin"
+        ],
+        "summary": "Change an order's status",
+        "description": "**Admin role required** — a customer token gets 403. Sets any status on any order. Setting `cancelled` puts the items back in stock. A cancelled order is final: changing it gets 400 `Order is already cancelled`. An unknown status gets 400 `Status must be one of: pending, paid, shipped, delivered, cancelled`.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "$ref": "#/components/schemas/OrderStatus"
+                  }
+                },
+                "required": [
+                  "status"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The updated order",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "order": {
+                      "$ref": "#/components/schemas/Order"
+                    }
+                  },
+                  "required": [
+                    "order"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "The `access_token` from `login`, `register` or `refresh_token`, sent on every call as `Authorization: Bearer <access_token>`. It expires after 15 minutes; get a new one with `refresh_token`. Operations with `security: []` are public."
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string",
+            "description": "Human-readable reason, in English.",
+            "example": "Only 25 item(s) in stock"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "description": "Every failure has this shape."
+      },
+      "TokenPair": {
+        "type": "object",
+        "properties": {
+          "access_token": {
+            "type": "string",
+            "description": "JWT to send as `Authorization: Bearer <access_token>`."
+          },
+          "refresh_token": {
+            "type": "string",
+            "description": "Single-use token for `refresh_token`. Store it safely and replace it with the new one after every refresh."
+          },
+          "token_type": {
+            "type": "string",
+            "enum": [
+              "Bearer"
+            ]
+          },
+          "expires_in": {
+            "type": "integer",
+            "description": "Seconds until the access token expires.",
+            "example": 900
+          },
+          "user": {
+            "$ref": "#/components/schemas/User"
+          }
+        },
+        "required": [
+          "access_token",
+          "refresh_token",
+          "token_type",
+          "expires_in",
+          "user"
+        ],
+        "description": "Returned by `register`, `login` and `refresh_token`."
+      },
+      "RefreshRequest": {
+        "type": "object",
+        "properties": {
+          "refreshToken": {
+            "type": "string",
+            "description": "A refresh token from `login`, `register` or a previous `refresh_token`."
+          }
+        },
+        "required": [
+          "refreshToken"
+        ]
+      },
+      "User": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "example": 2
+          },
+          "name": {
+            "type": "string",
+            "example": "Dilnoza Karimova"
+          },
+          "email": {
+            "type": "string",
+            "format": "email",
+            "description": "Always lower case.",
+            "example": "dilnoza@example.uz"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "customer",
+              "admin"
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-10-30T11:53:07.512+05:00"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "email",
+          "role",
+          "created_at"
+        ]
+      },
+      "Product": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "example": 6
+          },
+          "name": {
+            "type": "string",
+            "example": "Desk Lamp"
+          },
+          "description": {
+            "type": "string",
+            "description": "May be empty.",
+            "example": "LED lamp with three brightness levels"
+          },
+          "price": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Price in so'm.",
+            "example": 320000
+          },
+          "stock": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Units available; 0 means sold out.",
+            "example": 60
+          },
+          "category": {
+            "type": "string",
+            "description": "Lower case; `general` when none was given.",
+            "example": "home"
+          },
+          "image_url": {
+            "type": "string",
+            "format": "uri",
+            "nullable": true,
+            "description": "An http(s) link, or null when the product has no image."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-10-30T11:53:07.512+05:00"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-10-30T11:53:07.512+05:00"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "description",
+          "price",
+          "stock",
+          "category",
+          "image_url",
+          "created_at",
+          "updated_at"
+        ]
+      },
+      "ProductInput": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "Trimmed; must not be blank.",
+            "example": "Elektr choynak"
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 5000,
+            "description": "Stored as sent.",
+            "example": "1.7 litr, zanglamaydigan poʻlat"
+          },
+          "price": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1000000000,
+            "description": "In so'm; rounded to two decimals.",
+            "example": 250000
+          },
+          "stock": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000000000,
+            "example": 12
+          },
+          "category": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "Trimmed and lower-cased; blank becomes `general`. The shop's own categories are `electronics`, `clothing` and `home`.",
+            "example": "home"
+          },
+          "image_url": {
+            "type": "string",
+            "maxLength": 2048,
+            "description": "An absolute http or https link, or `\"\"` to remove the image.",
+            "example": "https://cdn.example.uz/choynak.jpg"
+          }
+        },
+        "description": "Fields of a product an admin can set. On `update_product` every field is optional."
+      },
+      "ProductPage": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Product"
+            }
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "example": 1
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "example": 20
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Products matching the filters, across all pages.",
+            "example": 6
+          },
+          "pages": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of pages; 0 when nothing matches.",
+            "example": 1
+          }
+        },
+        "required": [
+          "items",
+          "page",
+          "limit",
+          "total",
+          "pages"
+        ]
+      },
+      "CategoryCount": {
+        "type": "object",
+        "properties": {
+          "category": {
+            "type": "string",
+            "example": "electronics"
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 1,
+            "example": 2
+          }
+        },
+        "required": [
+          "category",
+          "count"
+        ]
+      },
+      "CartItem": {
+        "type": "object",
+        "properties": {
+          "product_id": {
+            "type": "integer",
+            "format": "int64",
+            "example": 1
+          },
+          "name": {
+            "type": "string",
+            "example": "Wireless Headphones"
+          },
+          "price": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Current price in so'm.",
+            "example": 1150000
+          },
+          "image_url": {
+            "type": "string",
+            "format": "uri",
+            "nullable": true
+          },
+          "stock": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Units available now, so a client can cap the quantity.",
+            "example": 25
+          },
+          "quantity": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "example": 2
+          },
+          "subtotal": {
+            "type": "number",
+            "minimum": 0,
+            "description": "`price × quantity`.",
+            "example": 2300000
+          }
+        },
+        "required": [
+          "product_id",
+          "name",
+          "price",
+          "image_url",
+          "stock",
+          "quantity",
+          "subtotal"
+        ]
+      },
+      "Cart": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CartItem"
+            }
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Total units across all lines.",
+            "example": 2
+          },
+          "total": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Sum of the subtotals, in so'm.",
+            "example": 2300000
+          }
+        },
+        "required": [
+          "items",
+          "count",
+          "total"
+        ]
+      },
+      "OrderStatus": {
+        "type": "string",
+        "enum": [
+          "pending",
+          "paid",
+          "shipped",
+          "delivered",
+          "cancelled"
+        ],
+        "description": "`pending` when placed. Customers can cancel only `pending` orders; admins can set any status, and `cancelled` is final."
+      },
+      "OrderItem": {
+        "type": "object",
+        "properties": {
+          "product_id": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true,
+            "description": "Null once the product has been deleted."
+          },
+          "name": {
+            "type": "string",
+            "description": "Product name when the order was placed.",
+            "example": "Ceramic Mug"
+          },
+          "price": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Price in so'm when the order was placed.",
+            "example": 95000
+          },
+          "quantity": {
+            "type": "integer",
+            "minimum": 1,
+            "example": 2
+          },
+          "subtotal": {
+            "type": "number",
+            "minimum": 0,
+            "description": "`price × quantity`.",
+            "example": 190000
+          }
+        },
+        "required": [
+          "product_id",
+          "name",
+          "price",
+          "quantity",
+          "subtotal"
+        ]
+      },
+      "Order": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "example": 1
+          },
+          "user_id": {
+            "type": "integer",
+            "format": "int64",
+            "example": 2
+          },
+          "status": {
+            "$ref": "#/components/schemas/OrderStatus"
+          },
+          "total": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Sum of the item subtotals, in so'm.",
+            "example": 190000
+          },
+          "shipping_address": {
+            "type": "string",
+            "example": "Toshkent sh., Amir Temur koʻchasi 1, 5-xonadon"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-10-30T11:53:07.512+05:00"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OrderItem"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "user_id",
+          "status",
+          "total",
+          "shipping_address",
+          "created_at",
+          "items"
+        ]
+      }
+    },
+    "responses": {
+      "BadRequest": {
+        "description": "The request was invalid. `error` says what to fix.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "Unauthorized": {
+        "description": "No valid credentials: `Authentication required`, `Invalid or expired token`, `User no longer exists`, or a sign-in or refresh failure described by the operation.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "The caller is signed in but is not an admin: `Admin access required`.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "The resource does not exist or belongs to someone else.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "Conflict": {
+        "description": "The request conflicts with the current state; the operation says when.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "TooManyRequests": {
+        "description": "Too many `register`, `login` or `refresh_token` attempts from this IP: `Too many attempts, try again later`.",
+        "headers": {
+          "Retry-After": {
+            "description": "Seconds to wait before trying again.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      }
+    }
+  }
+}
