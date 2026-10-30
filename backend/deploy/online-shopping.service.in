@@ -1,0 +1,24 @@
+# Template rendered by `make service-unit`; @PLACEHOLDERS@ are filled in by the Makefile.
+[Unit]
+Description=Online Shopping backend API
+After=network-online.target postgresql.service
+Wants=network-online.target
+RequiresMountsFor="@APP_DIR@"
+
+[Service]
+Type=simple
+User=@USER@
+Group=@GROUP@
+# The binary reads .env and data/ relative to this directory.
+WorkingDirectory=@APP_DIR@
+ExecStart="@APP_DIR@/@BIN@"
+Restart=on-failure
+RestartSec=5
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target
