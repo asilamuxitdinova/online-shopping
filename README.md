@@ -7,7 +7,7 @@ Uzbek, Russian and English, with prices in so'm.
 backend/    Go API: auth with access + refresh tokens, products, cart, orders, admin   → backend/README.md
 frontend/   React SPA: catalog, cart and checkout, orders, admin panel                 → frontend/README.md
 deploy/     web server config (Caddy, nginx) serving both on one domain
-docs/       OpenAPI 3.0 spec of the API: docs/online_shopping_openapi_v1.0.0.json
+docs/       OpenAPI 3.0 spec of the API: docs/online_shopping_openapi_v1.0.1.json
 ```
 
 ## Running locally
